@@ -1,0 +1,26 @@
+# --extra-index-url https://download.pytorch.org/whl/cu118
+torch>=2.2.0
+torchvision>=0.17.0
+torchaudio>=2.2.0
+panda3d==1.10.16
+pygame
+stable-baselines3
+gymnasium
+numpy
+scipy
+scikit-learn
+PyQt6==6.7.1
+PyQt6-Qt6==6.7.1
+PyQt6-sip>=13.6
+matplotlib
+pandas
+notebook
+tensorboard
+shimmy
+imageio-ffmpeg
+sounddevice
+opencv-python
+Pillow
+wandb
+tqdm
+sounddevice

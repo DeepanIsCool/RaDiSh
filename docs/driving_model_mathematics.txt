@@ -1,0 +1,786 @@
+================================================================================
+  LANCER Organic AV Training Simulator — Driving Model: Mathematical Foundation
+  Vehicle Design Viewport  ·  v9.1 Implementation Reference
+================================================================================
+
+This document derives every equation that governs vehicle motion in the
+simulation viewport.  The notation follows the source code so that each formula
+can be traced directly to an implementation line.
+
+────────────────────────────────────────────────────────────────────────────────
+1.  COORDINATE SYSTEM AND SIGN CONVENTIONS
+────────────────────────────────────────────────────────────────────────────────
+
+The world is a 2-D top-down plane rendered at 40 px / m.
+
+  Axis      Positive direction
+  ────────  ──────────────────────────────────────────────────────────────────
+  x_world   East on screen  (screen-right)
+  y_world   South on screen (screen-down, i.e. y increases downward)
+
+Vehicle frame  (attached to vehicle, rotates with heading):
+  longitudinal  +x_v  =  forward direction of travel
+  lateral       +y_v  =  left of the vehicle  (standard SAE convention)
+
+Heading  ψ  (rad):
+  Measured clockwise from North (screen-up).
+  ψ = 0  →  vehicle faces up  (North).
+  ψ = π/2  →  vehicle faces right  (East).
+
+State variables
+  v          longitudinal speed  [m/s],  + = forward
+  v_y        lateral speed in vehicle frame  [m/s],  + = left
+  ψ̇ (r)     yaw rate  [rad/s],  + = counter-clockwise (CCW)
+  ψ          heading  [rad],  CW from North
+  x, y       world pixel position of vehicle centre
+
+Driver inputs
+  δ_ref      reference steer angle  [deg],  + = right
+  τ          total applied torque on all drivable wheels  [N·m],  + = forward
+
+Constants (hard-coded in viewport.py)
+  m  = 1 500   kg           vehicle mass
+  I_z = 2 500  kg·m²        yaw moment of inertia about CG
+  C_f = 60 000 N/rad        front cornering stiffness (total, per axle)
+  C_r = 60 000 N/rad        rear  cornering stiffness (total, per axle)
+  μ  = 0.85                 peak tyre–road friction coefficient
+  Δt = 0.016   s            fixed physics timestep  (≈ 60 Hz)
+  g  = 9.81    m/s²
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.  VEHICLE GEOMETRY
+────────────────────────────────────────────────────────────────────────────────
+
+Axle positions are specified as a fraction p ∈ [0, 1] along the frame from
+front to rear.  The signed distance from the CG to axle k along the vehicle
+longitudinal axis is:
+
+    y_k  =  (p_k − 0.5) · L_frame                                          (1)
+
+where L_frame is the frame length in metres.  Negative y_k means the axle is
+ahead of the CG; positive means behind.
+
+For the bicycle model two effective axle distances are computed:
+
+    l_f  =  |mean(y_k) for all steerable axles|                             (2)
+    l_r  =  |mean(y_k) for all non-steerable axles|                         (3)
+    L    =  l_f + l_r          (effective wheelbase)                         (4)
+
+Special cases:
+  • All-wheel-steer (both) with no passive axle: l_f and l_r span front steer
+    axle to rear steer axle; L is the distance between the two steer groups.
+  • If no steerable axle exists, the frontmost axle is promoted to steerable
+    for model stability.
+
+
+────────────────────────────────────────────────────────────────────────────────
+3.  LONGITUDINAL DYNAMICS
+────────────────────────────────────────────────────────────────────────────────
+
+3.1  Torque distribution
+────────────────────────
+The user supplies a single total torque τ [N·m].  It is split equally among all
+drivable wheels:
+
+    τ_w  =  τ / n_drive                                                      (5)
+
+where n_drive is the total count of drivable wheels (all axles flagged
+"drivable", including dual-mounted wheels).
+
+3.2  Longitudinal tyre force per wheel
+───────────────────────────────────────
+Each driven wheel converts torque to a longitudinal ground force through the
+effective rolling radius r:
+
+    F_w  =  τ_w / r                                                          (6)
+
+This is the force demanded at the contact patch.  It does not yet account for
+the friction limit.
+
+3.3  Normal load per wheel
+──────────────────────────
+For longitudinal dynamics, normal load is distributed uniformly across all
+wheels (static approximation; load transfer is not modelled longitudinally):
+
+    N_w  =  m · g / n_total                                                  (7)
+
+where n_total is the total wheel count across all axles.
+
+3.4  Tyre width friction scaling
+─────────────────────────────────
+A wider contact patch supports a proportionally higher friction force.  The
+scaling is derived from contact-patch area arguments (area ∝ width × length,
+length ∝ N_w):
+
+    w_fac  =  min( 1.5,  sqrt( w_tyre / 0.20 ) )                            (8)
+
+where w_tyre is the tyre width in metres and 0.20 m is the reference width.
+The factor is clamped at 1.5, reached at w_tyre ≈ 0.45 m.
+
+3.5  Friction limit and traction saturation (longitudinal skidding)
+────────────────────────────────────────────────────────────────────
+The maximum longitudinal force that can be delivered without tyre slip is:
+
+    F_lim  =  μ · N_w · w_fac                                                (9)
+
+The actual delivered force per wheel is clamped (saturated):
+
+         ⎧  F_w        if |F_w| ≤ F_lim
+    F_act =  ⎨                                                               (10)
+         ⎩  sign(F_w) · F_lim     otherwise
+
+When |F_w| > F_lim, the wheel is spinning (drive) or locking (brake), and the
+tyre force is limited to the friction cone.  This is the longitudinal skid
+condition.
+
+3.6  Speed update
+─────────────────
+Newton's second law along the longitudinal axis:
+
+    Δv  =  (F_act · n_drive / m) · Δt                                       (11)
+    v  ←  v + Δv                                                             (12)
+
+3.7  Rolling resistance
+───────────────────────
+After the torque step, a first-order drag is applied:
+
+    v  ←  v · (1 − k_drag · Δt)                                             (13)
+
+The drag coefficient k_drag depends on drive state:
+
+         ⎧  0.50   if |τ| < 0.1  N·m   (coasting — brakes + rolling drag)
+    k_drag = ⎨                                                               (14)
+         ⎩  0.05   otherwise            (driving — only rolling drag)
+
+This is a linear viscous model.  The 0.50 value approximates combined tyre
+rolling resistance and mild aerodynamic drag at low speed; the 0.05 value
+represents the residual rolling resistance when power overcomes most of the
+drag torque.
+
+
+────────────────────────────────────────────────────────────────────────────────
+4.  LATERAL DYNAMICS — LINEAR BICYCLE MODEL
+────────────────────────────────────────────────────────────────────────────────
+
+4.1  Model overview
+────────────────────
+The vehicle is reduced to a single-track (bicycle) model: one equivalent front
+wheel and one equivalent rear wheel, each at the centroid of their respective
+axle group.  Lateral forces are linear functions of slip angle, saturated at
+the friction limit.
+
+4.2  Steer angle distribution
+──────────────────────────────
+The driver's reference angle δ_ref [deg] (+right) is converted to radians and
+distributed by steering mode:
+
+    δ  =  −radians(δ_ref)         (sign flip: model convention + = left)
+
+  Mode        δ_f (front wheel)    δ_r (rear wheel)
+  ──────────  ───────────────────  ─────────────────
+  "front"     δ                    0
+  "rear"      0                    δ
+  "both"      δ                    −δ   (counter-steer for tighter ICC)
+
+For "both" mode the rear axle counter-steers, halving the effective wheelbase
+and approximately doubling the yaw authority.
+
+4.3  Tyre slip angles
+──────────────────────
+The slip angle α is the angle between the wheel's heading and the direction of
+its velocity.  It is the primary driver of lateral cornering force.
+
+For the front equivalent wheel at distance l_f ahead of the CG:
+
+    α_f  =  sign(v) · δ_f  −  atan2( v_y + ψ̇ · l_f ,  |v| )              (15)
+
+For the rear equivalent wheel at distance l_r behind the CG:
+
+    α_r  =  sign(v) · δ_r  −  atan2( v_y − ψ̇ · l_r ,  |v| )              (16)
+
+The sign(v) factor ensures that the slip angle reverses correctly when the
+vehicle moves in reverse, so that cornering forces still act to oppose lateral
+slip regardless of direction.
+
+These expressions are evaluated only when |v| ≥ 0.5 m/s.  Below this speed
+the lateral dynamics are forced to zero through a fade damper (Section 4.7).
+
+Physical interpretation of each term:
+  sign(v) · δ     the wheel's heading offset from the vehicle longitudinal axis
+  atan2(…)        the direction of the velocity at the wheel contact point,
+                  expressed as an angle in the vehicle frame
+
+4.4  Normal load (static)
+──────────────────────────
+For lateral dynamics the static load is distributed assuming the CG lies at the
+centroid of the effective wheelbase:
+
+    N_f  =  m · g · l_r / L                                                 (17)
+    N_r  =  m · g · l_f / L                                                 (18)
+
+This is the quasi-static no-load-transfer approximation.  A heavier rear axle
+(l_r small, l_f large) places more load on the front.
+
+4.5  Cornering force — linear model with friction saturation
+──────────────────────────────────────────────────────────────
+The lateral cornering force produced by each equivalent tyre in the linear
+regime is:
+
+    F_y,f_linear  =  C_f · α_f                                              (19)
+    F_y,r_linear  =  C_r · α_r                                              (20)
+
+C_f and C_r are the total cornering stiffnesses (N/rad) for each axle group
+(not per wheel); they subsume all wheels in that group.
+
+Saturation at the friction ellipse (Coulomb limit):
+
+         ⎧  F_y_linear                 if |F_y_linear| ≤ μ · N
+    F_y = ⎨                                                                  (21)
+         ⎩  sign(F_y_linear) · μ · N   otherwise
+
+When the tyre is saturated, the lateral force is limited to μ · N_axle — the
+tyre is in a lateral skid (sideslip / breakaway).
+
+Note: The implementation uses the normal loads N_f and N_r (not per-wheel),
+and C_f, C_r are total axle stiffnesses.  This is consistent because the
+bicycle model collapses each axle to a single equivalent wheel.
+
+4.6  Equations of motion
+─────────────────────────
+Applying Newton's second law in the lateral (vehicle-frame y) direction and the
+rotational equation about the yaw (z) axis:
+
+Lateral translation:
+    m · v̇_y  =  F_y,f + F_y,r  −  m · v · ψ̇                            (22)
+
+Yaw rotation:
+    I_z · ψ̈  =  l_f · F_y,f  −  l_r · F_y,r                              (23)
+
+The term  −m · v · ψ̇  in (22) is the centripetal acceleration term: when the
+vehicle is rotating, the centripetal force required to maintain circular motion
+must be subtracted from the net lateral force to obtain the lateral
+acceleration in the vehicle frame.
+
+Discrete-time integration (first-order Euler):
+    v_y  ←  v_y  +  [ (F_y,f + F_y,r) / m  −  v · ψ̇ ] · Δt             (24)
+    ψ̇   ←  ψ̇   +  [ (l_f · F_y,f − l_r · F_y,r) / I_z ] · Δt           (25)
+
+4.7  Low-speed stabilisation
+─────────────────────────────
+Below 2 m/s the linear bicycle model becomes numerically stiff because slip
+angles diverge as v → 0, and physical lateral damping dominates the dynamics.
+An exponential fade is applied:
+
+    fade  =  1 − |v| / 2.0       ∈ [0, 1]  for  |v| < 2 m/s              (26)
+    k     =  exp(−fade · 10 · Δt)                                           (27)
+    v_y  ←  v_y · k                                                          (28)
+    ψ̇   ←  ψ̇  · k                                                           (29)
+
+At v = 0:  fade = 1,  k = exp(−0.16) ≈ 0.852 per tick  →  ψ̇ → 0 quickly.
+At v = 2:  fade = 0,  k = 1          →  no damping.
+
+This replaces a full low-speed tyre model (e.g. Pacejka) while keeping the
+vehicle controllable at rest.
+
+4.8  Lateral velocity clamp
+─────────────────────────────
+An additional hard clamp prevents unphysically large lateral velocities at high
+speed:
+
+    |v_y|  ≤  |v| · tan(45°)  =  |v|                                       (30)
+
+This limits the sideslip angle β = atan(v_y / v) to ±45°.  Deeper sideslip is
+considered a full spin condition beyond the scope of the linear model.
+
+
+────────────────────────────────────────────────────────────────────────────────
+5.  UNDERSTEER, OVERSTEER, AND NEUTRAL STEER
+────────────────────────────────────────────────────────────────────────────────
+
+5.1  Steady-state yaw gain and the understeer gradient
+───────────────────────────────────────────────────────
+In steady-state circular motion (v̇_y = 0, ψ̈ = 0) the lateral acceleration is:
+
+    a_y  =  v² / R                                                           (31)
+
+where R is the turn radius.  The required steer angle for neutral steer is:
+
+    δ_neutral  =  L / R   [rad]    (small-angle approximation)               (32)
+
+For a real tyre with finite cornering stiffness, each axle requires a slip
+angle to generate the necessary lateral force.  In steady state:
+
+    α_f  =  N_f / C_f   at some lateral acceleration a_y                    (33)
+    α_r  =  N_r / C_r   at the same a_y                                     (34)
+
+The understeer gradient K_us [rad / (m/s²)] measures how much extra steer is
+needed per unit of lateral acceleration:
+
+    K_us  =  m · (l_r / (C_r · L)  −  l_f / (C_f · L))                    (35)
+           =  m/L · (l_r/C_r − l_f/C_f)
+
+Substituting the model constants:
+
+    K_us  =  1500 / (L) · ( l_r/60000 − l_f/60000 )
+           =  (1500 / 60000L) · (l_r − l_f)
+           =  (0.025 / L) · (l_r − l_f)
+
+For the default geometry (l_f = l_r = 1.5 m, L = 3.0 m):
+
+    K_us  =  (0.025 / 3.0) · 0  =  0          →  neutral steer
+
+5.2  Stability conditions
+──────────────────────────
+  K_us > 0   →   understeering vehicle
+    The front tyres saturate before the rears.  At high speed the vehicle
+    requires an increasing steer angle to follow a fixed radius.
+    The vehicle always turns less sharply than commanded.
+    Under friction saturation the front tyre clips (eq. 21) first, and
+    yaw rate growth is limited — the vehicle plows straight.
+
+  K_us = 0   →   neutral steer
+    Front and rear axle loads and stiffnesses are exactly balanced.
+
+  K_us < 0   →   oversteering vehicle
+    The rear tyres saturate before the fronts.  A critical speed exists above
+    which the vehicle is directionally unstable (open-loop).
+
+5.3  Critical speed (oversteer)
+─────────────────────────────────
+For K_us < 0, there is a speed v_crit at which the yaw damping goes to zero:
+
+    v_crit  =  sqrt( −g · L / K_us )                                        (36)
+
+Above v_crit the vehicle diverges in yaw without active corrective steer.
+For the default symmetric configuration, K_us = 0 and v_crit = ∞.
+
+5.4  Identifying understeer / oversteer in simulation
+───────────────────────────────────────────────────────
+At runtime, the saturation model (eq. 21) provides a natural observable:
+
+  • If F_y,f is clamped and F_y,r is not:  front slides first  →  understeer.
+    The vehicle pushes wide (large slip, small yaw response).
+
+  • If F_y,r is clamped and F_y,f is not:  rear slides first  →  oversteer.
+    The rear of the vehicle pivots outward (large yaw rate spike).
+
+  • Both clamped simultaneously:  full four-wheel drift.
+
+
+────────────────────────────────────────────────────────────────────────────────
+6.  WORLD POSITION INTEGRATION
+────────────────────────────────────────────────────────────────────────────────
+
+The vehicle velocity in world frame is a rotation of the body-frame velocity
+vector by the heading ψ.  Using the Qt screen convention (y_screen increases
+downward):
+
+    ẋ_world  =   v · sin(ψ)  −  v_y · cos(ψ)                               (37)
+    ẏ_world  =  −v · cos(ψ)  −  v_y · sin(ψ)                               (38)
+
+The minus sign in (38) arises because the vehicle's forward direction at ψ = 0
+points screen-up (decreasing y_screen).
+
+Positions are accumulated in pixel units:
+
+    x_px  ←  x_px  +  ẋ_world · PX_PER_M · Δt                             (39)
+    y_px  ←  y_px  +  ẏ_world · PX_PER_M · Δt                             (40)
+
+Heading update (clockwise convention):
+
+    ψ  ←  (ψ − ψ̇ · Δt)  mod  2π                                           (41)
+
+The minus sign in (41): a positive yaw rate (CCW in physics) decreases ψ
+(which is measured clockwise).
+
+
+────────────────────────────────────────────────────────────────────────────────
+7.  ACKERMANN STEERING GEOMETRY
+────────────────────────────────────────────────────────────────────────────────
+
+7.1  Motivation
+────────────────
+For a vehicle to turn without tyre scrub, all four wheels must rotate about the
+same Instantaneous Centre of Curvature (ICC).  This requires the inner wheel to
+steer at a sharper angle than the outer wheel.  Ackermann geometry provides the
+exact angles.
+
+7.2  ICC radius from the reference steer angle
+───────────────────────────────────────────────
+The driver commands a reference steer angle δ_ref [deg] for the vehicle as a
+whole.  The ICC radius from the vehicle centreline is:
+
+    R_ICC  =  L / tan(|δ_ref|)  ·  sign(δ_ref)                             (42)
+
+where L is the effective wheelbase.  R_ICC > 0 for a right turn, R_ICC < 0 for
+a left turn.
+
+7.3  Per-axle Ackermann angles
+───────────────────────────────
+For each steerable axle at longitudinal offset y_axle from the vehicle CG, the
+longitudinal distance from the axle to the ICC level is:
+
+    d_i  =  y_ICC − y_axle                                                  (43)
+
+where y_ICC = y_nonsteer_m (the longitudinal position of the non-steerable
+axle centroid, which is approximately the ICC level for kinematic steering).
+
+For the rear-steer mode, d_i is forced positive because the steer direction
+convention reverses relative to the ICC.
+
+The effective reference angle for this axle is:
+
+    δ_axle  =  atan2(d_i, |R_ICC|)  ·  sign(R_ICC)                        (44)
+
+Note: the `|R_ICC|` in the denominator and the explicit sign multiplication
+are critical.  Passing the signed R_ICC directly to atan2 maps left turns into
+the second quadrant (≈ 170°) instead of a small negative angle — the source of
+a previously corrected rendering bug.
+
+7.4  Inner and outer wheel angles (Ackermann pair)
+────────────────────────────────────────────────────
+Given the effective reference angle δ_axle and the track width T:
+
+    R_ref  =  |d_i| / tan(|δ_axle|)    (ICC radius from axle centreline)    (45)
+
+The inner wheel (closer to ICC) must turn sharper than the outer:
+
+    δ_inner  =  atan2(|d_i|,  R_ref − T/2)                                 (46)
+    δ_outer  =  atan2(|d_i|,  R_ref + T/2)                                 (47)
+
+Assigning left / right with the correct sign:
+
+  For a right turn (sign > 0):
+      δ_right  =  +δ_inner    (right = inner)
+      δ_left   =  +δ_outer    (left  = outer)
+
+  For a left turn (sign < 0):
+      δ_right  =  −δ_outer    (right = outer)
+      δ_left   =  −δ_inner    (left  = inner)
+
+The visual tyre rotation in the viewport uses these per-wheel angles for all
+steerable axles, giving geometrically correct Ackermann steering for vehicles
+with any number of steer axles.
+
+7.5  Dual-axle steer groups
+─────────────────────────────
+When multiple axles share a steering group (e.g. tandem steer), each axle
+computes its own d_i and therefore its own Ackermann pair.  Axles closer to the
+ICC require a sharper turn than axles farther away — the geometry is solved
+independently per axle.
+
+
+────────────────────────────────────────────────────────────────────────────────
+8.  DIFFERENTIAL MODEL AND WHEEL ROTATION
+────────────────────────────────────────────────────────────────────────────────
+
+8.1  Per-side ground speed during a turn
+─────────────────────────────────────────
+When the vehicle turns with steer angle δ_ref and track width T:
+
+    R_t  =  L / tan(|δ_ref|)             (turn radius at CG)               (48)
+
+For a right turn (sign = +1) the right side is the inner side:
+    v_right  =  v · (R_t − T/2) / R_t   (inner — shorter path)            (49)
+    v_left   =  v · (R_t + T/2) / R_t   (outer — longer path)             (50)
+
+For a left turn the assignments flip by the sign.
+
+8.2  Open differential
+───────────────────────
+Each side is free to spin at its own speed.  The wheel angular velocity on each
+side is:
+
+    ω_right  =  v_right / r                                                  (51)
+    ω_left   =  v_left  / r                                                  (52)
+
+Wheel rotation angle (accumulated for tread-stripe rendering):
+
+    θ_right  ←  (θ_right  +  v_right · Δt / r)  mod  2π                   (53)
+    θ_left   ←  (θ_left   +  v_left  · Δt / r)  mod  2π                   (54)
+
+8.3  Locked differential
+─────────────────────────
+Both sides are constrained to the same rotational speed.  The common speed is
+the average of the ideal individual speeds:
+
+    v_avg  =  (v_right + v_left) / 2  =  v                                  (55)
+
+    θ_right  ←  (θ_right  +  v_avg · Δt / r)  mod  2π                     (56)
+    θ_left   ←  (θ_left   +  v_avg · Δt / r)  mod  2π                     (57)
+
+Effect: during a turn the locked diff forces the inner tyre to spin faster than
+its ideal speed and the outer tyre to spin slower, creating a net understeer
+moment and tyre scrub.  This is visible in the viewport as both sides
+displaying the average speed rather than differential speeds.
+
+8.4  Passive (trailer) wheels
+──────────────────────────────
+Trailer axles are non-driven and non-steered.  A single shared rotation angle
+is accumulated using the tractor's longitudinal speed as an approximation of
+the trailer's forward speed:
+
+    θ_trailer  ←  (θ_trailer  +  v · Δt / r)  mod  2π                     (58)
+
+This is a visual approximation; no per-side differentiation is performed on
+passive axles.
+
+
+────────────────────────────────────────────────────────────────────────────────
+9.  FIFTH-WHEEL KINEMATIC TRAILER MODEL
+────────────────────────────────────────────────────────────────────────────────
+
+9.1  System description
+────────────────────────
+An articulating trailer is coupled to the tractor via a fifth-wheel hitch at
+position p_hitch along the tractor frame.  The hitch / kingpin is a pin joint
+that constrains the trailer's front to follow the hitch point but allows free
+rotation about the vertical axis (articulation angle φ = ψ_t − ψ).
+
+State:  ψ_t  — trailer heading [rad],  same CW-from-North convention.
+
+Parameters:
+    L_t     — kingpin distance: hitch to trailer axle centroid [m]
+    φ_max   — maximum articulation angle [rad]  (user-configurable)
+
+9.2  Kinematic constraint
+──────────────────────────
+The trailer is modelled as a rigid body rolling on passive wheels without
+lateral slip.  The no-lateral-slip constraint at the trailer axle centroid
+means the trailer's velocity must be aligned with its heading.  This produces
+the following first-order ODE for the trailer heading:
+
+    dψ_t/dt  =  (v_hitch · sin(ψ − ψ_t)) / L_t                            (59)
+
+where v_hitch ≈ v is the longitudinal speed of the tractor (equivalently the
+speed of the hitch point in the direction of the tractor heading).
+
+Derivation:  The hitch point moves at velocity v along the tractor's heading ψ.
+The component of that velocity perpendicular to the trailer's heading ψ_t is
+v · sin(ψ − ψ_t).  For the trailer to satisfy the no-slip constraint, the
+axle must travel perpendicular to the trailer heading at the rate:
+
+    v_perp  =  L_t · dψ_t/dt
+
+Setting v_perp = v · sin(ψ − ψ_t) gives eq. (59).
+
+Convergence: when ψ_t = ψ (trailer aligned with tractor) the right-hand side
+is zero — the trailer heading is stable.  When ψ_t ≠ ψ the trailer is "pulled"
+toward the tractor heading at a rate proportional to v and inversely
+proportional to L_t.
+
+9.3  Discrete-time update
+──────────────────────────
+Let Δψ = ψ − ψ_t be the heading difference, normalised to (−π, π]:
+
+    Δψ_norm  =  (Δψ + π) mod 2π  −  π                                      (60)
+
+First-order Euler step:
+    ψ_t  ←  ψ_t  +  (v · sin(Δψ_norm) / L_t) · Δt                        (61)
+
+9.4  Articulation angle clamping
+──────────────────────────────────
+After the kinematic update, the articulation angle φ = ψ_t − ψ is normalised
+and hard-clamped:
+
+    φ_norm  =  (φ + π) mod 2π  −  π                                        (62)
+    φ_clamp =  clamp(φ_norm,  −φ_max,  +φ_max)                             (63)
+    ψ_t     =  ψ + φ_clamp                                                  (64)
+
+This prevents the trailer from jack-knifing beyond the mechanical stop.
+
+9.5  Hitch screen position
+───────────────────────────
+In the vehicle-local painter frame (origin at CG, +y rearward), the hitch is
+at longitudinal offset:
+
+    h_local  =  (p_hitch − 0.5) · L_frame · PX_PER_M   [px]               (65)
+
+After rotation by heading ψ, the hitch screen position is:
+
+    h_x  =  cx  −  h_local · sin(ψ)                                        (66)
+    h_y  =  cy  +  h_local · cos(ψ)                                        (67)
+
+The trailer is then drawn in a coordinate frame translated to (h_x, h_y) and
+rotated by ψ_t, with y = 0 at the hitch and y > 0 rearward along the trailer.
+
+9.6  Trailing behaviour
+────────────────────────
+The kinematic model exhibits physically correct behaviour:
+
+  Straight driving:   ψ_t → ψ  (trailer aligns with tractor)
+  Steady-state turn:  φ_steady ≈ asin(v · Δt / (L_t · dψ/dt))
+                               ≈ L_t_effective / R_tractor  for small angles
+  Jack-knife:         prevented by φ_max clamp; analogous to articulation
+                      stops on real semi-trucks (typically 45°–90°)
+
+
+────────────────────────────────────────────────────────────────────────────────
+10.  IDLE DETECTION AND EARLY EXIT
+────────────────────────────────────────────────────────────────────────────────
+
+To avoid numerical drift and unnecessary redraws when the vehicle is at rest,
+the simulation applies a strict idle test:
+
+    idle  ⟺  |v| < 10⁻⁴ m/s
+             AND  |v_y| < 0.01 m/s
+             AND  |ψ̇| < 0.01 rad/s
+             AND  |τ| < 0.1 N·m                                             (68)
+
+When idle, v_y and ψ̇ are zeroed and the tick exits early without integrating
+positions or updating the trailer.  The physics timer still fires at 60 Hz but
+does minimal work.
+
+
+────────────────────────────────────────────────────────────────────────────────
+11.  COMPLETE TICK SEQUENCE
+────────────────────────────────────────────────────────────────────────────────
+
+Each Δt = 0.016 s the following steps execute in order:
+
+  Step 1   _apply_drive_torque()
+           τ_w = τ / n_drive                            [eq. 5]
+           F_w = τ_w / r                                [eq. 6]
+           N_w = m·g / n_total                          [eq. 7]
+           w_fac = min(1.5, √(w_tyre / 0.20))          [eq. 8]
+           F_lim = μ · N_w · w_fac                      [eq. 9]
+           F_act = clamp(F_w, ±F_lim)                  [eq. 10]
+           v ← v + (F_act · n_drive / m) · Δt         [eq. 12]
+           v ← v · (1 − k_drag · Δt)                  [eq. 13]
+
+  Step 2   Idle check                                   [eq. 68]
+           → early return if idle
+
+  Step 3   Slip angles
+           δ_f, δ_r from steering mode                  [Section 4.2]
+           α_f = sign(v)·δ_f − atan2(v_y + ψ̇·l_f, |v|) [eq. 15]
+           α_r = sign(v)·δ_r − atan2(v_y − ψ̇·l_r, |v|) [eq. 16]
+
+  Step 4   Normal loads
+           N_f = m·g·l_r / L                            [eq. 17]
+           N_r = m·g·l_f / L                            [eq. 18]
+
+  Step 5   Cornering forces with saturation
+           F_y,f = clamp(C_f·α_f, ±μ·N_f)             [eq. 19, 21]
+           F_y,r = clamp(C_r·α_r, ±μ·N_r)             [eq. 20, 21]
+
+  Step 6   Equations of motion (Euler integration)
+           v_y ← v_y + [(F_y,f+F_y,r)/m − v·ψ̇] · Δt  [eq. 24]
+           ψ̇  ← ψ̇  + [(l_f·F_y,f − l_r·F_y,r)/I_z] · Δt [eq. 25]
+
+  Step 7   Lateral velocity clamp                       [eq. 30]
+           |v_y| ≤ |v|
+
+  Step 8   Low-speed fade                               [eq. 26-29]
+           (applied when |v| < 2 m/s)
+
+  Step 9   World position integration
+           x_px ← x_px + (v·sin ψ − v_y·cos ψ) · PX/M · Δt  [eq. 39]
+           y_px ← y_px + (−v·cos ψ − v_y·sin ψ) · PX/M · Δt [eq. 40]
+           ψ    ← (ψ − ψ̇·Δt) mod 2π                         [eq. 41]
+
+  Step 10  Differential wheel rotation
+           Open:   θ_R += v_R·Δt/r,  θ_L += v_L·Δt/r        [eq. 53-54]
+           Locked: θ_R = θ_L += v·Δt/r                        [eq. 56-57]
+
+  Step 11  Fifth-wheel kinematic update  (if enabled)
+           Δψ_norm = (ψ − ψ_t + π) mod 2π − π               [eq. 60]
+           ψ_t ← ψ_t + (v·sin(Δψ_norm)/L_t)·Δt             [eq. 61]
+           φ_clamp = clamp(ψ_t − ψ, ±φ_max)                 [eq. 63]
+           ψ_t = ψ + φ_clamp                                  [eq. 64]
+           θ_trailer += v·Δt/r                                [eq. 58]
+
+  Step 12  Repaint viewport
+
+
+────────────────────────────────────────────────────────────────────────────────
+12.  MODEL LIMITATIONS AND KNOWN APPROXIMATIONS
+────────────────────────────────────────────────────────────────────────────────
+
+12.1  No longitudinal–lateral coupling
+  The friction ellipse is not enforced across both directions simultaneously.
+  Combined slip (e.g. braking while cornering) does not reduce the lateral
+  friction limit.  The tyre forces are independently saturated.
+
+12.2  Uniform mass and load
+  Mass is fixed at 1 500 kg regardless of vehicle type.  Normal load does not
+  transfer longitudinally under braking/acceleration or laterally in cornering.
+  A full load-transfer model would use:
+    ΔN_lateral  =  m · a_y · h_CG / T_track
+    ΔN_longitudinal = m · a_x · h_CG / L
+
+12.3  Single cornering stiffness
+  C_f and C_r are constant.  Real tyres follow the Pacejka "Magic Formula"
+  where stiffness varies with slip angle, normal load, and camber.  The
+  saturation clamp in eq. (21) provides a rough approximation of the Pacejka
+  peak without modelling the drop-off beyond peak slip.
+
+12.4  Rigid tyre
+  Tyre width affects only the longitudinal friction ceiling (eq. 8).  It does
+  not affect cornering stiffness (which it should in a full model:
+  C ∝ contact-patch length × lateral stiffness per unit length).
+
+12.5  Linear-region bicycle model
+  The bicycle model is valid for small slip angles (α < ~5–8°).  At larger
+  slip angles the linear force law (eq. 19-20) overpredicts cornering force.
+  The saturation (eq. 21) mitigates this but does not reproduce the rounded
+  Pacejka shoulder.
+
+12.6  Kinematic trailer (no inertia)
+  The trailer uses a purely kinematic (massless, frictionless-pivot) model.
+  In reality, the trailer has its own yaw inertia, which damps high-frequency
+  articulation oscillations and delays jack-knife.
+
+12.7  Symmetric cornering stiffness
+  C_f = C_r = 60 000 N/rad gives K_us = 0 (neutral steer) for symmetric
+  geometry.  Real vehicles are typically slightly understeering by design
+  (K_us ≈ 0.002 – 0.005 rad·s²/m for passenger cars).
+
+
+────────────────────────────────────────────────────────────────────────────────
+13.  NOTATION SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+  Symbol      Unit       Description
+  ──────────  ─────────  ──────────────────────────────────────────────────────
+  v           m/s        longitudinal speed  (+ forward)
+  v_y         m/s        lateral speed in vehicle frame  (+ left)
+  ψ           rad        heading, CW from North
+  ψ̇ (r)      rad/s      yaw rate  (+ CCW)
+  δ_ref       deg        driver reference steer angle  (+ right)
+  δ           rad        steer angle in model  (+ left, sign-flipped)
+  δ_f, δ_r   rad        front / rear steer angles
+  α_f, α_r   rad        front / rear tyre slip angles
+  F_y,f/r    N          lateral tyre force, front / rear
+  N_f, N_r   N          normal load, front / rear
+  F_w         N          demanded tyre longitudinal force per wheel
+  F_act       N          actual tyre longitudinal force per wheel
+  F_lim       N          friction limit per wheel
+  τ           N·m        total input torque
+  τ_w         N·m        torque per driven wheel
+  r           m          tyre rolling radius
+  L           m          effective wheelbase
+  l_f, l_r   m          CG to front / rear equivalent axle distance
+  T           m          steer track width
+  R_ICC       m          ICC radius  (+ right turn)
+  R_t         m          turn radius at CG
+  K_us        rad·s²/m   understeer gradient
+  v_crit      m/s        critical speed (oversteer instability threshold)
+  m           kg         vehicle mass  (1 500)
+  I_z         kg·m²      yaw moment of inertia  (2 500)
+  C_f, C_r   N/rad      cornering stiffness, front / rear  (60 000 each)
+  μ           –          peak friction coefficient  (0.85)
+  w_fac       –          tyre width friction scaling factor
+  Δt          s          physics timestep  (0.016)
+  ψ_t         rad        trailer heading
+  L_t         m          kingpin distance (hitch to trailer axle centroid)
+  φ           rad        articulation angle  ψ_t − ψ
+  φ_max       rad        maximum articulation angle (user setting)
+  p_hitch     –          hitch position as fraction of tractor frame  [0, ∞)
+  PX_PER_M    px/m       viewport scale  (40)
+
+
+================================================================================
+  End of document
+================================================================================

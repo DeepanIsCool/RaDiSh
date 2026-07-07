@@ -1,0 +1,88 @@
+{
+  "window": {
+    "title": "LANCER - Organic Traffic Simulation Framework",
+    "width": 1600,
+    "height": 902
+  },
+  "layout": {
+    "menu_bar_height": 30,
+    "tab_selector_height": 40,
+    "content_height": 800,
+    "status_bar_height": 30
+  },
+  "tabs": [
+    { "id": "vehicle_design",      "label": "Vehicle Design",      "color": "accent_blue" },
+    { "id": "vehicle_testing",     "label": "Vehicle Testing",     "color": "accent_cyan" },
+    { "id": "environment_design",  "label": "Environment Design",  "color": "accent_green" },
+    { "id": "environment_testing", "label": "Environment Testing", "color": "accent_light_green" },
+    { "id": "training",            "label": "Training",            "color": "accent_yellow" },
+    { "id": "inference",           "label": "Inference",           "color": "accent_orange" },
+    { "id": "demonstration",       "label": "Demonstration",       "color": "accent_red" }
+  ],
+  "theme": {
+    "window_bg":           "#111118",
+    "menu_bg":             "#0c0c12",
+    "menu_text":           "#b0b0cc",
+    "tab_bar_bg":          "#0c0c12",
+    "tab_active_bg":       "#171e30",
+    "tab_active_text":     "#eeeef8",
+    "tab_active_border":   "#3d7eff",
+    "tab_inactive_bg":     "#0c0c12",
+    "tab_inactive_text":   "#8888b8",
+    "tab_hover_bg":        "#111120",
+    "tab_hover_text":      "#c0c0e0",
+    "reload_bg":           "#0c0c12",
+    "reload_text":         "#8888b8",
+    "reload_hover_bg":     "#14142a",
+    "reload_hover_text":   "#3d7eff",
+    "content_bg":          "#111118",
+    "status_bg":           "#0c0c12",
+    "status_text":         "#8080b0",
+    "border":              "#252538",
+    "accent_blue":         "#3d7eff",
+    "accent_cyan":         "#00bcd4",
+    "accent_green":        "#4caf50",
+    "accent_light_green":  "#8bc34a",
+    "accent_yellow":       "#ffd740",
+    "accent_orange":       "#ff9800",
+    "accent_red":          "#f44336",
+    "accent":              "#3d7eff",
+
+    "panel_header_bg":     "#0c0c12",
+    "panel_header_text":   "#8888c0",
+    "section_header_bg":   "#0f0f1e",
+    "section_header_text": "#9090c0",
+    "section_hover_bg":    "#141428",
+
+    "label_dim":           "#9090b8",
+    "label_bright":        "#d0d0f0",
+
+    "input_bg":            "#0d0d1e",
+    "input_text":          "#c8c8e8",
+    "input_border":        "#252538",
+
+    "btn_bg":              "#161630",
+    "btn_text":            "#a8a8cc",
+    "btn_hover_bg":        "#1e1e3c",
+    "btn_hover_text":      "#e0e0f8",
+    "btn_active_bg":       "#1a2540",
+    "btn_active_text":     "#eeeef8",
+    "btn_active_border":   "#3d7eff",
+
+    "slider_groove":       "#0d0d1e",
+    "slider_handle":       "#3d7eff",
+    "slider_fill":         "#1e2e5e",
+
+    "collapsible_bg":      "#0e0e1c",
+    "collapsible_hover":   "#141430",
+    "collapsible_text":    "#a0a0cc",
+    "collapsible_open_bg": "#111126",
+
+    "viewport_bg":         "#64c864",
+    "viewport_grid_minor": "#5fbe5f",
+    "viewport_grid_major": "#50a050",
+    "viewport_origin":     "#3d8c3d",
+
+    "splitter_handle":     "#252538"
+  }
+}

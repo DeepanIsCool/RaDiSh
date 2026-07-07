@@ -1,0 +1,42 @@
+{
+  "frame_length_m": 4.0,
+  "frame_width_m": 1.8,
+  "tyre_radius_cm": 33,
+  "tyre_width_cm": 20,
+  "steering_mode": "front",
+  "drive_mode": "rear",
+  "differential": "open",
+  "max_wheel_angle_deg": 35,
+  "max_torque_nm": 3000,
+  "max_wheel_rpm": 400,
+  "groups": {
+    "front": {
+      "axle_count": 1,
+      "separation_cm": 5,
+      "position_pct": 15,
+      "wheels_per_axle": 2
+    },
+    "middle": {
+      "axle_count": 0,
+      "separation_cm": 5,
+      "position_pct": 50,
+      "wheels_per_axle": 2
+    },
+    "rear": {
+      "axle_count": 1,
+      "separation_cm": 5,
+      "position_pct": 85,
+      "wheels_per_axle": 2
+    }
+  },
+  "fifth_wheel": {
+    "enabled": false,
+    "hitch_pct": 90,
+    "trailer_length_m": 8.0,
+    "max_angle_deg": 45,
+    "axle_count": 2,
+    "wheels_per_axle": 4,
+    "axle_position_pct": 75,
+    "axle_separation_cm": 5
+  }
+}
